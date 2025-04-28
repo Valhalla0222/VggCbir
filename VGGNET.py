@@ -43,6 +43,10 @@ class VGGNet:
         # 模型概率预测设定
         self.model.predict(np.zeros((1, 224, 224, 3)))
 
+        # 随机超平面用于局部敏感哈希（512维特征 -> 128位哈希码）
+        self.hash_bits = 128  # 哈希码长度
+        self.lsh_planes = np.random.randn(512, self.hash_bits)
+
     # 使用vgg16模型提取特征输出归一化特征向量
     def get_feat(self, img_path):
         # 加载图像，格式为PIL，目标尺寸为224*224
@@ -60,4 +64,13 @@ class VGGNet:
         norm_feature = features[0] / LA.norm(features[0])
         # print("feature[0]:")
         # print(LA.norm(features[0]))
-        return norm_feature
+        # 生成LSH哈希码
+        lsh_code = self._hash(norm_feature)
+
+        return norm_feature, lsh_code
+
+        # 局部敏感哈希函数（简单随机超平面方法）
+    def _hash(self, feature):
+        projections = np.dot(feature, self.lsh_planes)  # 投影到超平面上
+        hash_code = (projections > 0).astype(int)  # 根据投影正负决定哈希位
+        return hash_code

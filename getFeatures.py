@@ -49,16 +49,19 @@ print("--------------------------------------------------")
 
 features = []
 names = []
+hash_codes = []
 
 model = VGGNet()
 for i, img_path in enumerate(img_list):
-    norm_feat = model.get_feat(img_path)
+    norm_feat, lsh_code= model.get_feat(img_path)
     img_name = img_path
     features.append(norm_feat)
+    hash_codes.append(lsh_code)
     names.append(img_name)
     print("正在提取图像特征：第 %d 张 , 共 %d 张......." % ((i + 1), len(img_list)) + img_name)
 
 feats = np.array(features)
+hashes = np.array(hash_codes)
 # print(feats)
 # 用于存储提取特征的文件
 output = "index.h5"
@@ -70,4 +73,5 @@ print("--------------------------------------------------")
 h5f = h5py.File(output, 'w')
 h5f.create_dataset('dataset_1', data=features)
 h5f.create_dataset('dataset_2', data=np.string_(names))
+h5f.create_dataset('dataset_3', data=hash_codes)
 h5f.close()

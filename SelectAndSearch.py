@@ -5,13 +5,28 @@ from PyQt5.QtWidgets import (
     QGridLayout, QLabel, QVBoxLayout, QGraphicsDropShadowEffect
 )
 from PyQt5.QtGui import QPixmap, QFont, QIcon, QColor
-from PyQt5.QtCore import Qt, QSize
-from PIL import Image, ImageQt
-from search import searchByVgg, getScores  # 确保search.py存在
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
+from search import searchByVgg, getScores  # 确保search.py存在且路径正确
+
+class SearchThread(QThread):
+    result_ready = pyqtSignal(list, list)
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    def run(self):
+        im_ls = searchByVgg(self.path)
+        scores = getScores()
+        self.result_ready.emit(im_ls, scores)
 
 class SelectAndSearch(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # 用来保存所有打开的结果窗口，防止被回收
+        self.result_windows = []
+
         self.bg_color = '#fafafa'
         self.setStyleSheet(f'background-color: {self.bg_color};')
 
@@ -23,8 +38,7 @@ class SelectAndSearch(QWidget):
         self.img_path = QLineEdit(self)
         self.img_path.setPlaceholderText('请选择要检索的图片...')
         self.img_path.setFont(QFont('Arial', 14))
-        self.img_path.setFixedWidth(600)
-        self.img_path.setFixedHeight(50)
+        self.img_path.setFixedSize(600, 50)
         self.img_path.setStyleSheet("""
             QLineEdit {
                 border: 2px solid #ccc;
@@ -75,7 +89,6 @@ class SelectAndSearch(QWidget):
         if os.path.exists(icon_path):
             button.setIcon(QIcon(icon_path))
             button.setIconSize(QSize(24, 24))
-        # 添加阴影效果
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(15)
         shadow.setOffset(0, 3)
@@ -83,7 +96,6 @@ class SelectAndSearch(QWidget):
         button.setGraphicsEffect(shadow)
 
     def adjust_color(self, hex_color, amount=20):
-        # 调整颜色亮度
         col = QColor(hex_color)
         r = min(max(col.red() + amount, 0), 255)
         g = min(max(col.green() + amount, 0), 255)
@@ -93,7 +105,9 @@ class SelectAndSearch(QWidget):
     def img_choose(self):
         options = QFileDialog.Options()
         file, _ = QFileDialog.getOpenFileName(
-            self, '选择图片', os.getcwd(), 'Image Files (*.png *.jpg *.bmp *.jpeg)', options=options)
+            self, '选择图片', os.getcwd(),
+            'Image Files (*.png *.jpg *.bmp *.jpeg)', options=options
+        )
         if file:
             self.img_path.setText(file)
 
@@ -101,29 +115,27 @@ class SelectAndSearch(QWidget):
         path = self.img_path.text()
         if not path:
             return
-        start = time.perf_counter()
-        im_ls = searchByVgg(path)
-        duration = time.perf_counter() - start
-        print(f'检索时长: {duration:.3f}s')
 
-        scores = getScores()
-        self.show_results(path, im_ls, scores)
+        # 启动搜索线程
+        self.search_thread = SearchThread(path)
+        self.search_thread.result_ready.connect(self.show_results)
+        self.search_thread.start()
 
-    def show_results(self, query_path, im_ls, scores):
-        # 结果窗口
-        result = QWidget()
-        result.setWindowTitle('检索结果')
-        result.setGeometry(200, 150, 1280, 720)
-        result.setStyleSheet('background-color: #f8f9fa;')
+    def show_results(self, im_ls, scores):
+        """在新窗口中显示检索结果，并保存窗口引用防止被回收"""
+        win = QWidget()
+        self.result_windows.append(win)
+
+        win.setWindowTitle('检索结果')
+        win.setGeometry(200, 150, 1280, 720)
+        win.setStyleSheet('background-color: #f8f9fa;')
 
         grid = QGridLayout()
         grid.setSpacing(25)
 
         # 原始查询图
-        original = Image.open(query_path)
-        original = original.resize((360, 200), Image.ANTIALIAS)
-        op_qimage = ImageQt.ImageQt(original)
-        op_pix = QPixmap.fromImage(op_qimage)
+        query_path = self.img_path.text()
+        pix_query = QPixmap(query_path).scaled(360, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
         orig_label = QLabel('被检索的图片')
         orig_label.setFont(QFont('Arial', 20, QFont.Bold))
@@ -131,13 +143,19 @@ class SelectAndSearch(QWidget):
         grid.addWidget(orig_label, 0, 0, 1, 5)
 
         img_label = QLabel()
-        img_label.setPixmap(op_pix)
+        img_label.setPixmap(pix_query)
         img_label.setAlignment(Qt.AlignCenter)
         grid.addWidget(img_label, 1, 0, 1, 5)
 
-        # 检索结果
-        for idx, (img_path, score) in enumerate(zip(im_ls, scores)):
-            row = 2 + idx // 5 * 2
+        # 检索结果图
+        for idx, (raw_path, score) in enumerate(zip(im_ls, scores)):
+            # 解码 bytes 路径
+            if isinstance(raw_path, (bytes, bytearray)):
+                path = raw_path.decode('utf-8')
+            else:
+                path = raw_path
+
+            row = 2 + (idx // 5) * 2
             col = idx % 5
 
             lbl_score = QLabel(f'相似度: {score:.2f}')
@@ -145,14 +163,12 @@ class SelectAndSearch(QWidget):
             lbl_score.setAlignment(Qt.AlignCenter)
             grid.addWidget(lbl_score, row, col)
 
-            img = Image.open(img_path)
-            img = img.resize((240, 140), Image.ANTIALIAS)
-            qimg = ImageQt.ImageQt(img)
-            pix = QPixmap.fromImage(qimg)
+            # 直接用 QPixmap 加载并缩放
+            pix = QPixmap(path).scaled(240, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             img_lbl = QLabel()
             img_lbl.setPixmap(pix)
             img_lbl.setAlignment(Qt.AlignCenter)
             grid.addWidget(img_lbl, row + 1, col)
 
-        result.setLayout(grid)
-        result.show()
+        win.setLayout(grid)
+        win.show()
